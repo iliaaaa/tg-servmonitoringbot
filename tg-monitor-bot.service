@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram Server Monitoring Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/opt/tg-servmonitoringbot
+Environment="PATH=/opt/tg-servmonitoringbot/venv/bin"
+ExecStart=/opt/tg-servmonitoringbot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
