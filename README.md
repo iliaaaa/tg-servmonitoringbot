@@ -9,6 +9,8 @@
 - `/process` — 10 самых тяжёлых процессов
 - `/stop` — остановка обновлений и удаление сообщения
 - уведомление о перезагрузке сервера
+- уведомления по каталогам процессов (см. `WATCH_DIRS`)
+- уведомления по systemd unit (см. `WATCH_UNITS`)
 
 ## 🚀 Быстрый старт
 
@@ -26,6 +28,9 @@ go build -ldflags "-s -w" -o tg-monitor-bot
 ```env
 BOT_TOKEN=ваш_токен_от_BotFather
 ALLOWED_USERS=ваш_telegram_id
+WATCH_DIRS=/opt/bots,/home/user/.rbenv
+WATCH_UNITS=tg-monitor-bot.service,nginx.service
+WATCH_UNIT_PREFIXES=my-,tg_
 ```
 
 4) Запуск:

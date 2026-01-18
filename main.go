@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -26,6 +27,8 @@ const (
 	maxUpdateDuration  = 10 * time.Minute
 	telegramMaxRunes   = 3800
 	rebootCheckSeconds = 30
+	dirCheckSeconds    = 30
+	unitCheckSeconds   = 30
 )
 
 type Bot struct {
@@ -315,6 +318,21 @@ func main() {
 	bot := NewBot(token)
 	go monitorReboot(bot, allowed)
 
+	watchDirs := parseWatchDirs(os.Getenv("WATCH_DIRS"))
+	if len(watchDirs) > 0 {
+		go monitorDirs(bot, allowed, watchDirs)
+	}
+	watchUnits := parseWatchUnits(os.Getenv("WATCH_UNITS"))
+	if len(watchUnits) == 0 {
+		prefixes := parseWatchPrefixes(os.Getenv("WATCH_UNIT_PREFIXES"))
+		if len(prefixes) > 0 {
+			watchUnits = loadUnitsByPrefix(prefixes)
+		}
+	}
+	if len(watchUnits) > 0 {
+		go monitorUnits(bot, allowed, watchUnits)
+	}
+
 	offset := 0
 	for {
 		updates, err := bot.GetUpdates(offset)
@@ -409,6 +427,152 @@ func monitorReboot(bot *Bot, allowed map[int64]bool) {
 	}
 }
 
+func parseWatchDirs(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseWatchUnits(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseWatchPrefixes(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return []string{"kab-", "tg_"}
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func loadUnitsByPrefix(prefixes []string) []string {
+	entries, err := os.ReadDir("/etc/systemd/system")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".service") {
+			continue
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(name, p) {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func monitorDirs(bot *Bot, allowed map[int64]bool, dirs []string) {
+	prev := map[string]int{}
+	for _, d := range dirs {
+		prev[d] = -1
+	}
+
+	ticker := time.NewTicker(dirCheckSeconds * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		counts := countProcessesByDir(dirs)
+		for _, d := range dirs {
+			current := counts[d]
+			last := prev[d]
+			if last >= 0 {
+				if last > 0 && current == 0 {
+					msg := fmt.Sprintf("⚠️ <b>Нет процессов из каталога</b>\n\n<code>%s</code>", d)
+					for userID := range allowed {
+						_, _ = bot.SendMessage(userID, msg)
+					}
+				} else if last == 0 && current > 0 {
+					msg := fmt.Sprintf("✅ <b>Процессы снова появились</b>\n\n<code>%s</code>\nКоличество: %d", d, current)
+					for userID := range allowed {
+						_, _ = bot.SendMessage(userID, msg)
+					}
+				}
+			}
+			prev[d] = current
+		}
+	}
+}
+
+func monitorUnits(bot *Bot, allowed map[int64]bool, units []string) {
+	prev := map[string]string{}
+	for _, u := range units {
+		prev[u] = ""
+	}
+
+	ticker := time.NewTicker(unitCheckSeconds * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		for _, u := range units {
+			status := systemdUnitStatus(u)
+			last := prev[u]
+			if last != "" && status != last {
+				if status != "active" {
+					msg := fmt.Sprintf("⚠️ <b>Unit не активен</b>\n\n<code>%s</code>\nСтатус: %s", u, status)
+					for userID := range allowed {
+						_, _ = bot.SendMessage(userID, msg)
+					}
+				} else {
+					msg := fmt.Sprintf("✅ <b>Unit снова активен</b>\n\n<code>%s</code>", u)
+					for userID := range allowed {
+						_, _ = bot.SendMessage(userID, msg)
+					}
+				}
+			}
+			prev[u] = status
+		}
+	}
+}
+
+func systemdUnitStatus(unit string) string {
+	out, err := exec.Command("systemctl", "is-active", unit).Output()
+	if err != nil {
+		// systemctl returns non-zero for inactive/failed/not-found
+		if ee, ok := err.(*exec.ExitError); ok {
+			text := strings.TrimSpace(string(ee.Stderr))
+			if text != "" {
+				return text
+			}
+		}
+	}
+	status := strings.TrimSpace(string(out))
+	if status == "" {
+		return "unknown"
+	}
+	return status
+}
+
 func readBootTime() time.Time {
 	file, err := os.Open("/proc/stat")
 	if err != nil {
@@ -441,6 +605,10 @@ func formatStatus() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	swapTotal, swapFree, err := getSwapInfo()
+	if err != nil {
+		return "", err
+	}
 	disks, err := getDisks()
 	if err != nil {
 		return "", err
@@ -453,6 +621,11 @@ func formatStatus() (string, error) {
 
 	memUsed := memTotal - memAvail
 	memPercent := float64(memUsed) / float64(memTotal) * 100
+	swapUsed := swapTotal - swapFree
+	swapPercent := 0.0
+	if swapTotal > 0 {
+		swapPercent = float64(swapUsed) / float64(swapTotal) * 100
+	}
 
 	var b strings.Builder
 	b.WriteString("📊 <b>Статус сервера</b>\n\n")
@@ -463,6 +636,12 @@ func formatStatus() (string, error) {
 	b.WriteString(formatPercentage(memPercent))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("Использовано: %s / %s\n\n", formatBytes(memUsed), formatBytes(memTotal)))
+	if swapTotal > 0 {
+		b.WriteString(fmt.Sprintf("🧠 <b>SWAP:</b> %s\n", statusEmoji(swapPercent)))
+		b.WriteString(formatPercentage(swapPercent))
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("Использовано: %s / %s\n\n", formatBytes(swapUsed), formatBytes(swapTotal)))
+	}
 	b.WriteString("💿 <b>Диски:</b>\n")
 	for _, d := range disks {
 		b.WriteString(fmt.Sprintf("%s <code>%s</code>\n", statusEmoji(d.UsedPercent), d.Mountpoint))
@@ -568,6 +747,25 @@ func getMemInfo() (total uint64, available uint64, err error) {
 		return 0, 0, fmt.Errorf("meminfo incomplete")
 	}
 	return total * 1024, available * 1024, nil
+}
+
+func getSwapInfo() (total uint64, free uint64, err error) {
+	file, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "SwapTotal:") {
+			total = parseMeminfoValue(line)
+		} else if strings.HasPrefix(line, "SwapFree:") {
+			free = parseMeminfoValue(line)
+		}
+	}
+	return total * 1024, free * 1024, nil
 }
 
 func parseMeminfoValue(line string) uint64 {
@@ -881,6 +1079,51 @@ func getTopProcesses() ([]ProcInfo, error) {
 		procs = procs[:10]
 	}
 	return procs, nil
+}
+
+func countProcessesByDir(dirs []string) map[string]int {
+	counts := map[string]int{}
+	for _, d := range dirs {
+		counts[d] = 0
+	}
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return counts
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		exePath, _ := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+		cmdline := readCmdline(pid)
+
+		if exePath == "" && cmdline == "" {
+			continue
+		}
+
+		for _, d := range dirs {
+			if (exePath != "" && strings.Contains(exePath, d)) ||
+				(cmdline != "" && strings.Contains(cmdline, d)) {
+				counts[d]++
+			}
+		}
+	}
+	return counts
+}
+
+func readCmdline(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	return strings.ReplaceAll(string(data), "\x00", " ")
 }
 
 func readProcStatus(pid int) (ProcInfo, error) {
