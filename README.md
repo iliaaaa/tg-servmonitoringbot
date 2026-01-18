@@ -1,6 +1,6 @@
-# 🤖 Telegram Бот для Мониторинга Сервера (Go)
+# 🤖 Telegram Бот для сониторинга сервера (Go)
 
-Минимальный бот для мониторинга с низким потреблением ресурсов.
+Микро бот для мониторинга с низким потреблением ресурсов.
 
 ## ✨ Возможности
 
@@ -18,9 +18,9 @@
 
 2) Сборка:
 ```bash
-cd /opt
-git clone <your-repo> tg-servmonitoringbot
-cd tg-servmonitoringbot
+cd /opt/bots
+git clone https://github.com/iliaaaa/tg-server-monitor.git tg-server-monitor
+cd tg-server-monitor
 go build -ldflags "-s -w" -o tg-monitor-bot
 ```
 
@@ -32,6 +32,8 @@ WATCH_DIRS=/opt/bots,/home/user/.rbenv
 WATCH_UNITS=tg-monitor-bot.service,nginx.service
 WATCH_UNIT_PREFIXES=my-,tg_
 ```
+`WATCH_UNITS` можно не задавать — тогда будут мониториться unit-ы,
+имя которых начинается с префиксов из `WATCH_UNIT_PREFIXES`.
 
 4) Запуск:
 ```bash

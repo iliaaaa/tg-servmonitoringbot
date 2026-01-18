@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=YOUR_USER
-WorkingDirectory=/opt/tg-servmonitoringbot
-EnvironmentFile=/opt/tg-servmonitoringbot/.env
-ExecStart=/opt/tg-servmonitoringbot/tg-monitor-bot
+WorkingDirectory=/opt/bots/tg-server-monitor
+EnvironmentFile=/opt/bots/tg-server-monitor/.env
+ExecStart=/opt/bots/tg-server-monitor/tg-monitor-bot
 Restart=always
 RestartSec=10
 
