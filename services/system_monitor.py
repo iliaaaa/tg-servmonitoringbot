@@ -2,6 +2,7 @@
 import psutil
 import platform
 import socket
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List
 from utils import format_bytes, format_percentage, get_status_emoji
@@ -12,6 +13,24 @@ class SystemMonitor:
     
     def __init__(self):
         self.boot_time = datetime.fromtimestamp(psutil.boot_time())
+        self._connections_cache_value: int | None = None
+        self._connections_cache_ts = 0.0
+
+    def _get_connections_count(self, ttl_seconds: int = 30) -> int:
+        """Считает соединения не чаще, чем раз в ttl_seconds"""
+        now = time.monotonic()
+        if self._connections_cache_value is not None and (now - self._connections_cache_ts) < ttl_seconds:
+            return self._connections_cache_value
+
+        try:
+            # inet меньше по объёму, чем полный список
+            count = len(psutil.net_connections(kind='inet'))
+        except Exception:
+            count = 0
+
+        self._connections_cache_value = count
+        self._connections_cache_ts = now
+        return count
     
     def get_cpu_info(self) -> Dict:
         """Получает информацию о CPU"""
@@ -66,7 +85,7 @@ class SystemMonitor:
         net_io_pernic = psutil.net_io_counters(pernic=True)
         if_addrs = psutil.net_if_addrs()
         if_stats = psutil.net_if_stats()
-        connections = len(psutil.net_connections())
+        connections = self._get_connections_count()
 
         return {
             'total': net_io_total,
