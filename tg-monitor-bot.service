@@ -6,8 +6,8 @@ After=network.target
 Type=simple
 User=YOUR_USER
 WorkingDirectory=/opt/tg-servmonitoringbot
-Environment="PATH=/opt/tg-servmonitoringbot/venv/bin"
-ExecStart=/opt/tg-servmonitoringbot/venv/bin/python bot.py
+EnvironmentFile=/opt/tg-servmonitoringbot/.env
+ExecStart=/opt/tg-servmonitoringbot/tg-monitor-bot
 Restart=always
 RestartSec=10
 
