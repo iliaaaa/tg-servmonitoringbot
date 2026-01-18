@@ -1,8 +1,9 @@
 """Мониторинг системных ресурсов"""
 import psutil
 import platform
+import socket
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from utils import format_bytes, format_percentage, get_status_emoji
 
 
@@ -61,34 +62,39 @@ class SystemMonitor:
     
     def get_network_info(self) -> Dict:
         """Получает информацию о сети"""
-        net_io = psutil.net_io_counters()
+        net_io_total = psutil.net_io_counters()
+        net_io_pernic = psutil.net_io_counters(pernic=True)
+        if_addrs = psutil.net_if_addrs()
+        if_stats = psutil.net_if_stats()
         connections = len(psutil.net_connections())
-        
+
         return {
-            'bytes_sent': net_io.bytes_sent,
-            'bytes_recv': net_io.bytes_recv,
-            'packets_sent': net_io.packets_sent,
-            'packets_recv': net_io.packets_recv,
+            'total': net_io_total,
+            'pernic': net_io_pernic,
+            'addrs': if_addrs,
+            'stats': if_stats,
             'connections': connections
         }
     
     def get_top_processes(self, limit: int = 10) -> List[Dict]:
-        """Получает топ процессов по использованию CPU"""
+        """Получает топ процессов по нагрузке (CPU+RAM)"""
         processes = []
         for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
             try:
                 pinfo = proc.info
+                mem_bytes = proc.memory_info().rss
                 processes.append({
                     'pid': pinfo['pid'],
                     'name': pinfo['name'],
                     'cpu': pinfo['cpu_percent'],
-                    'memory': pinfo['memory_percent']
+                    'memory': pinfo['memory_percent'],
+                    'memory_bytes': mem_bytes
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         
-        # Сортируем по CPU
-        processes.sort(key=lambda x: x['cpu'], reverse=True)
+        # Сортируем по памяти, затем по CPU
+        processes.sort(key=lambda x: (x['memory_bytes'], x['cpu']), reverse=True)
         return processes[:limit]
     
     def get_uptime(self) -> timedelta:
@@ -190,24 +196,65 @@ class SystemMonitor:
         """Информация о топ процессах"""
         processes = self.get_top_processes(10)
         
-        message = f"📋 <b>Топ-10 процессов по CPU</b>\n\n"
+        message = f"📋 <b>Топ-10 самых тяжёлых процессов</b>\n\n"
         
         for i, proc in enumerate(processes, 1):
             message += f"{i}. <b>{proc['name']}</b>\n"
-            message += f"   PID: {proc['pid']} | CPU: {proc['cpu']:.1f}% | RAM: {proc['memory']:.1f}%\n"
+            message += (
+                f"   PID: {proc['pid']} | "
+                f"CPU: {proc['cpu']:.1f}% | "
+                f"RAM: {proc['memory']:.1f}% "
+                f"({format_bytes(proc['memory_bytes'])})\n"
+            )
         
         return message
     
     def format_network_message(self) -> str:
         """Информация о сети"""
         net = self.get_network_info()
-        
+        total = net['total']
+
         message = f"🌐 <b>Сетевая статистика</b>\n\n"
-        message += f"📤 Отправлено: {format_bytes(net['bytes_sent'])}\n"
-        message += f"📥 Получено: {format_bytes(net['bytes_recv'])}\n"
-        message += f"📦 Пакетов отправлено: {net['packets_sent']:,}\n"
-        message += f"📦 Пакетов получено: {net['packets_recv']:,}\n"
-        message += f"🔌 Активных соединений: {net['connections']}"
-        
-        return message
+        message += f"📤 Отправлено: {format_bytes(total.bytes_sent)}\n"
+        message += f"📥 Получено: {format_bytes(total.bytes_recv)}\n"
+        message += f"📦 Пакетов отправлено: {total.packets_sent:,}\n"
+        message += f"📦 Пакетов получено: {total.packets_recv:,}\n"
+        message += f"❗ Ошибок: in {total.errin:,} / out {total.errout:,}\n"
+        message += f"🚫 Drops: in {total.dropin:,} / out {total.dropout:,}\n"
+        message += f"🔌 Активных соединений: {net['connections']}\n\n"
+
+        message += "🧩 <b>Интерфейсы:</b>\n"
+        for if_name in sorted(net['pernic'].keys()):
+            pernic = net['pernic'][if_name]
+            stats = net['stats'].get(if_name)
+            addrs = net['addrs'].get(if_name, [])
+
+            status = "up" if stats and stats.isup else "down"
+            speed = f"{stats.speed} Mbps" if stats and stats.speed is not None else "n/a"
+            mtu = f"{stats.mtu}" if stats and stats.mtu is not None else "n/a"
+
+            message += f"\n<b>{if_name}</b> ({status}, {speed}, MTU {mtu})\n"
+            message += f"  ↗ {format_bytes(pernic.bytes_sent)} | ↘ {format_bytes(pernic.bytes_recv)}\n"
+            message += f"  pkts ↗ {pernic.packets_sent:,} | ↘ {pernic.packets_recv:,}\n"
+
+            ipv4_list = []
+            ipv6_list = []
+            mac_list = []
+            for addr in addrs:
+                if getattr(addr, 'family', None) == psutil.AF_LINK:
+                    if addr.address:
+                        mac_list.append(addr.address)
+                elif getattr(addr, 'family', None) == socket.AF_INET:
+                    ipv4_list.append(addr.address)
+                elif getattr(addr, 'family', None) == socket.AF_INET6:
+                    ipv6_list.append(addr.address)
+
+            if mac_list:
+                message += f"  MAC: {', '.join(mac_list)}\n"
+            if ipv4_list:
+                message += f"  IPv4: {', '.join(ipv4_list)}\n"
+            if ipv6_list:
+                message += f"  IPv6: {', '.join(ipv6_list)}\n"
+
+        return message.rstrip()
 
